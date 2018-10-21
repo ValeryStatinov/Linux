@@ -149,6 +149,8 @@ int main() {
                 "rm [file/dir] - delete file of directory"
                 "import [inner_name] [outer_name] - brings copy of outer_name file to your file system"
                 "to inner_name file. If inner_name file doesn't exist then it will be created in current directory\n"
+                "exit - use it to finish working with file system and save all changes\n"
+                "!!! WITHOUT EXIT COMMAND ALL CHANGES WILL BE LOST\n"
                 );
                 printf(ANSI_COLOR_YELLOW "ValeryStatinovFS$ " ANSI_COLOR_RESET);
         }
