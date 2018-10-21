@@ -249,10 +249,18 @@ uint8_t write_to_FS_file(void* filesystem, char* name, char* data) {
             uint16_t last_block_num = file_inode->block_numbers_[file_inode->num_blocks_taken_ - 1];
             void* destination = filesystem + INFO_BLOCKS_OFFSET + last_block_num * BLOCK_SIZE +
                 (BLOCK_SIZE - empty_space);
-            memcpy(destination, data, empty_space);
-            num_bytes_to_write -= empty_space;
-            offset_in_data += empty_space;
-            file_inode->size_ += empty_space;
+            if (num_bytes_to_write > empty_space) {
+                memcpy(destination, data, empty_space);
+                num_bytes_to_write -= empty_space;
+                offset_in_data += empty_space;
+                file_inode->size_ += empty_space;
+            }
+            else {
+                memcpy(destination, data, num_bytes_to_write);
+                file_inode->size_ += num_bytes_to_write;
+                num_bytes_to_write = 0;
+            }
+            
         }
         else {
             if (file_inode->num_blocks_taken_ == BLOCKS_IN_INODE - 1) {
@@ -266,6 +274,7 @@ uint8_t write_to_FS_file(void* filesystem, char* name, char* data) {
                 memcpy(destination, data + offset_in_data, BLOCK_SIZE);
                 num_bytes_to_write -= BLOCK_SIZE;
                 file_inode->size_ += BLOCK_SIZE;
+                offset_in_data += BLOCK_SIZE;
             }
             else {
                 memcpy(destination, data + offset_in_data, num_bytes_to_write);
