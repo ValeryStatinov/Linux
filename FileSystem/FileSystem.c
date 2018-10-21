@@ -3,9 +3,9 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
-#include "Structures.h"//fflush(stdout) for debug
+#include "Structures.h"
+#include "FileSystem.h"
 
-//define global constants
 const uint32_t NUM_BLOCKS = 65536;
 const uint16_t NUM_INODES = 4096;
 const uint16_t BLOCK_SIZE = 1024;
@@ -14,10 +14,6 @@ const uint64_t BLOCK_BITMAP_OFFSET = sizeof(Superblock);
 const uint64_t INODE_BITMAP_OFFSET = sizeof(Superblock)+ NUM_BLOCKS / 8;
 const uint64_t INDOES_OFFSET = sizeof(Superblock) + NUM_BLOCKS / 8 + NUM_INODES / 8;
 const uint64_t INFO_BLOCKS_OFFSET = INDOES_OFFSET + INODE_SIZE * NUM_INODES;
-
-void print(uint64_t a) {
-    printf("%llu\n", a);
-}
 
 void* allocate_memory_for_filesystem() {
     size_t size = sizeof(Superblock) + NUM_BLOCKS / 8 + NUM_INODES / 8 + 
@@ -178,15 +174,15 @@ uint8_t change_directory_from_inode(void* filesystem, const char* path, uint16_t
     return 0; //success
 }
 
-void change_directory(void* filesystem, const char* path) {
+uint8_t change_directory(void* filesystem, const char* path) {
     if (path[0] == '/') {
-        change_directory_from_inode(filesystem, path + 1, 0); //from root inode
+        return change_directory_from_inode(filesystem, path + 1, 0); //from root inode
     }
     else {
         Superblock* super = (Superblock*)filesystem;
-        change_directory_from_inode(filesystem, path, super->current_inode_);
+        return change_directory_from_inode(filesystem, path, super->current_inode_);
     }
-    return;
+    return 0;
 }
 
 uint8_t create_file(void* filesystem, char* name, inode_type type) { //creates both files and directories
@@ -297,11 +293,24 @@ uint8_t write_to_FS_file(void* filesystem, char* name, char* data) {
     return 0;
 }
 
+uint8_t is_file(void* filesystem, char* name) {
+    Superblock* super = (Superblock*)filesystem;
+    int inode_num = get_inode_number(filesystem, name, super->current_inode_);
+    if (inode_num == -1) {
+        return 1; //error
+    }
+    Inode* file_inode = (Inode*)(filesystem + INDOES_OFFSET + inode_num * sizeof(Inode));
+    if (file_inode->type_ == Directory) {
+        return 1; //error
+    }
+    return 0;
+}
+
 char* read_from_FS_file(void* filesystem, const char* name) { //!!! ALLOCATES MEMORY VIA MALLOC !!!
     Superblock* super = (Superblock*)filesystem;
     int inode_num = get_inode_number(filesystem, name, super->current_inode_);
     if (inode_num == -1) {
-        exit(-1);
+        exit(-1); //error
     }
     Inode* file_inode = (Inode*)(filesystem + INDOES_OFFSET + inode_num * sizeof(Inode));
     if (file_inode->type_ == Directory) {
@@ -329,9 +338,7 @@ char* read_from_FS_file(void* filesystem, const char* name) { //!!! ALLOCATES ME
 uint8_t import_file(void* filesystem, char* inner_name, const char* outer_name) {
     Superblock* super = (Superblock*)filesystem;
     Inode* current = (Inode*)(filesystem + INDOES_OFFSET + super->current_inode_ * sizeof(Inode));
-
     FILE *file = fopen(outer_name, "r");
-
     if (file == NULL)
     {
         return 1;
@@ -423,6 +430,7 @@ uint8_t delete_item(void* filesystem, const char* name) {
                     return 0;
                 }
                 else {
+                    //we will move last DirectoryInfoBlock to this place
                     deleted_block = blk + j * sizeof(DirectoryInfoBlock);
                     i = current->num_blocks_taken_;
                 }
@@ -457,6 +465,36 @@ void* init_filesystem() {
 
     Inode* root = (Inode*)(filesystem + INDOES_OFFSET);
     return filesystem;
+}
+
+void* open_filesystem() {
+    FILE* FS_file = fopen("STATINOV_FILE_SYSTEM", "r+");
+    if (FS_file == NULL) {
+        FS_file = fopen("STATINOV_FILE_SYSTEM", "w");
+        fclose(FS_file);
+        void* FS = init_filesystem();
+        return FS;
+    }
+    void* FS = allocate_memory_for_filesystem();
+    size_t size = sizeof(Superblock) + NUM_BLOCKS / 8 + NUM_INODES / 8 + 
+        NUM_INODES * INODE_SIZE + NUM_BLOCKS * BLOCK_SIZE;
+    size = fread(FS, 1, size, FS_file);
+    fclose(FS_file);
+    return FS;
+}
+
+void save_filesystem(void* filesystem) {
+    Superblock* super = (Superblock*)filesystem;
+    super->current_inode_ = 0;
+    FILE* FS_file = fopen("STATINOV_FILE_SYSTEM", "w");
+    if (FS_file == NULL) {
+        exit(-1);
+    }
+    size_t size = sizeof(Superblock) + NUM_BLOCKS / 8 + NUM_INODES / 8 + 
+        NUM_INODES * INODE_SIZE + NUM_BLOCKS * BLOCK_SIZE;
+    size = fwrite((Superblock*)filesystem, 1, size, FS_file);
+    fclose(FS_file);
+    return;
 }
 
 void free_allocated_filesystem_memory(void* filesystem) {

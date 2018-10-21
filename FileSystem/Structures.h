@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <stdint.h>
 
-const uint16_t BLOCKS_IN_INODE = 14;
+#define BLOCKS_IN_INODE 14
 
 typedef struct {
     uint32_t num_blocks_;
