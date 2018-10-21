@@ -50,7 +50,10 @@ uint32_t get_empty_block(void* filesystem) {
     for (int i = 0; i < NUM_BLOCKS / 64; ++i) {
         for(int j = 0; j < 64; ++j) {
             if (((bitmap[i] >> j) & 1) == 0) {
-                return i * 64 + j;
+                uint32_t empty_block_num = i * 64 + j;
+                uint64_t* blocks_bitmap = (uint64_t*)(filesystem + BLOCK_BITMAP_OFFSET);
+                blocks_bitmap[empty_block_num / 64] = blocks_bitmap[empty_block_num / 64] | (1 << (empty_block_num % 64));
+                return empty_block_num;
             }
         }
     }
@@ -62,63 +65,14 @@ uint16_t get_empty_inode(void* filesystem) {
     for (int i = 0; i < NUM_INODES / 64; ++i) {
         for (int j = 0; j < 64; ++j) {
             if (((bitmap[i] >> j) & 1) == 0) {
-                return i * 64 + j;
+                uint16_t empty_inode_num = i * 64 + j;
+                uint64_t* inodes_bitmap = (uint64_t*)(filesystem + INODE_BITMAP_OFFSET);
+                inodes_bitmap[empty_inode_num / 64] = inodes_bitmap[empty_inode_num / 64] | (1 << (empty_inode_num % 64));
+                return empty_inode_num;
             }
         }
     }
-    exit(-1); //returns -1 if there is no empty inodes
-}
-
-uint8_t make_directory(void* filesystem, const char* name) {
-    Superblock* super = (Superblock*)filesystem;
-    Inode* current = (Inode*)(filesystem + INDOES_OFFSET + super->current_inode_ * (sizeof(Inode)));
-    //reserve place for new inode in bitmap
-    uint16_t empty_inode_num = get_empty_inode(filesystem);
-    if (empty_inode_num == 0) {
-        exit(-1);
-    }
-    uint64_t* inodes_bitmap = (uint64_t*)(filesystem + INODE_BITMAP_OFFSET);
-    inodes_bitmap[empty_inode_num / 64] = inodes_bitmap[empty_inode_num / 64] | (1 << (empty_inode_num % 64));
-
-    //create inode for directory
-    Inode new_dir;
-    new_dir.type_ = Directory;
-    uint16_t block_numbers[BLOCKS_IN_INODE];
-    memcpy(new_dir.block_numbers_, block_numbers, sizeof(block_numbers));
-    memcpy(new_dir.name_, name, strlen(name));
-    memcpy(new_dir.name_ + strlen(name), "\0", 1);
-    new_dir.size_ = 0;
-    new_dir.num_blocks_taken_ = 0;
-    new_dir.parent_dir_inode_num_ = super->current_inode_;
-    memcpy(filesystem + INDOES_OFFSET + empty_inode_num * sizeof(Inode), &new_dir, sizeof(Inode));
-
-    //create new infoblock
-    DirectoryInfoBlock blk;
-    memcpy(blk.name_, name, strlen(name));
-    memcpy(blk.name_ + strlen(name), "\0", 1);
-    blk.inode_num_ = empty_inode_num;
-
-    //tell current inode that new directory is created in it
-    uint16_t fillable_space = BLOCK_SIZE - BLOCK_SIZE % sizeof(DirectoryInfoBlock);
-    uint16_t empty_space = fillable_space - current->size_ % fillable_space;
-    if (empty_space >= sizeof(DirectoryInfoBlock) && empty_space != fillable_space) {
-        uint16_t last_block_num = current->block_numbers_[current->num_blocks_taken_ - 1];
-        memcpy(filesystem + INFO_BLOCKS_OFFSET + last_block_num * BLOCK_SIZE + fillable_space - empty_space,
-            &blk, sizeof(DirectoryInfoBlock));
-    }
-    else {
-        if (current->num_blocks_taken_ == BLOCKS_IN_INODE - 1) {
-            exit(-1); //error
-        }
-        uint32_t empty_block_num = get_empty_block(filesystem);
-        uint64_t* blocks_bitmap = (uint64_t*)(filesystem + BLOCK_BITMAP_OFFSET);
-        blocks_bitmap[empty_block_num / 64] = blocks_bitmap[empty_block_num / 64] | (1 << (empty_block_num % 64));
-        current->block_numbers_[current->num_blocks_taken_] = empty_block_num;
-        current->num_blocks_taken_ += 1;
-        memcpy(filesystem + INFO_BLOCKS_OFFSET + empty_block_num * BLOCK_SIZE, &blk, sizeof(DirectoryInfoBlock));
-    }
-    current->size_ += sizeof(DirectoryInfoBlock);
-    return 0; //success
+    return 0;
 }
 
 char* list_dir(void* filesystem) { ///!!! ALLOCATES MEMORY VIA MALLOC !!!
@@ -200,6 +154,10 @@ uint8_t change_directory_from_inode(void* filesystem, const char* path, uint16_t
         int inode_num = get_inode_number(filesystem, next_directory, tmp_inode_num);
         if (inode_num != -1) {
             tmp_inode_num = inode_num;
+            Inode* inode = (Inode*)(filesystem + INDOES_OFFSET + tmp_inode_num * sizeof(Inode));
+            if (inode->type_ != Directory) {
+                return 1; //error
+            }
         }
         else {
             return 1; //error
@@ -220,6 +178,156 @@ void change_directory(void* filesystem, const char* path) {
     return;
 }
 
+uint8_t create_file(void* filesystem, char* name, inode_type type) { //creates both files and directories
+    Superblock* super = (Superblock*)filesystem;
+    Inode* current = (Inode*)(filesystem + INDOES_OFFSET + super->current_inode_ * sizeof(Inode));
+
+    //reserve place for new inode in bitmap
+    uint16_t empty_inode_num = get_empty_inode(filesystem);
+    if (empty_inode_num == 0) {
+        return 1;
+    }
+    //create inode for file
+    Inode new_file;
+    new_file.type_ = type;
+    uint16_t block_numbers[BLOCKS_IN_INODE];
+    memcpy(new_file.block_numbers_, block_numbers, sizeof(block_numbers));
+    memcpy(new_file.name_, name, strlen(name));
+    memcpy(new_file.name_ + strlen(name), "\0", 1);
+    new_file.size_ = 0;
+    new_file.num_blocks_taken_ = 0;
+    new_file.parent_dir_inode_num_ = super->current_inode_;
+    memcpy(filesystem + INDOES_OFFSET + empty_inode_num * sizeof(Inode), &new_file, sizeof(Inode));
+
+    //create info block
+    DirectoryInfoBlock blk;
+    memcpy(blk.name_, name, strlen(name));
+    memcpy(blk.name_ + strlen(name), "\0", 1);
+    blk.inode_num_ = empty_inode_num;
+
+    //tell current inode that new file is created in it
+    uint16_t fillable_space = BLOCK_SIZE - BLOCK_SIZE % sizeof(DirectoryInfoBlock);
+    uint16_t empty_space = fillable_space - current->size_ % fillable_space;
+    if (empty_space >= sizeof(DirectoryInfoBlock) && empty_space != fillable_space) {
+        uint16_t last_block_num = current->block_numbers_[current->num_blocks_taken_ - 1];
+        memcpy(filesystem + INFO_BLOCKS_OFFSET + last_block_num * BLOCK_SIZE + fillable_space - empty_space,
+            &blk, sizeof(DirectoryInfoBlock));
+    }
+    else {
+        if (current->num_blocks_taken_ == BLOCKS_IN_INODE - 1) {
+            return 1; //error
+        }
+        uint32_t empty_block_num = get_empty_block(filesystem);
+        current->block_numbers_[current->num_blocks_taken_] = empty_block_num;
+        current->num_blocks_taken_ += 1;
+        memcpy(filesystem + INFO_BLOCKS_OFFSET + empty_block_num * BLOCK_SIZE, &blk, sizeof(DirectoryInfoBlock));
+    }
+    current->size_ += sizeof(DirectoryInfoBlock);
+    return 0; //success
+}
+
+uint8_t write_to_FS_file(void* filesystem, char* name, char* data) {
+    Superblock* super = (Superblock*)filesystem;
+    Inode* current = (Inode*)(filesystem + INDOES_OFFSET + super->current_inode_ * sizeof(Inode));
+    int inode_num = get_inode_number(filesystem, name, super->current_inode_);
+    if (inode_num == -1) {
+        create_file(filesystem, name, File);
+        inode_num = get_inode_number(filesystem, name, super->current_inode_);
+        if (inode_num == -1) {
+            return 1;
+        }
+    }
+    Inode* file_inode = (Inode*)(filesystem + INDOES_OFFSET + inode_num * sizeof(Inode));
+    if (file_inode->type_ == Directory) {
+        return 1;
+    }
+    uint64_t num_bytes_to_write = strlen(data);
+    uint64_t offset_in_data = 0;
+    uint16_t empty_space = BLOCK_SIZE - file_inode->size_ % BLOCK_SIZE;
+    while (num_bytes_to_write > 0) {
+        if (empty_space > 0 && empty_space != BLOCK_SIZE) {
+            uint16_t last_block_num = file_inode->block_numbers_[file_inode->num_blocks_taken_ - 1];
+            void* destination = filesystem + INFO_BLOCKS_OFFSET + last_block_num * BLOCK_SIZE +
+                (BLOCK_SIZE - empty_space);
+            memcpy(destination, data, empty_space);
+            num_bytes_to_write -= empty_space;
+            offset_in_data += empty_space;
+            file_inode->size_ += empty_space;
+        }
+        else {
+            if (file_inode->num_blocks_taken_ == BLOCKS_IN_INODE - 1) {
+                return 1; //error
+            }
+            uint32_t empty_block_num = get_empty_block(filesystem);
+            file_inode->block_numbers_[file_inode->num_blocks_taken_] = empty_block_num;
+            file_inode->num_blocks_taken_ += 1;
+            void* destination = filesystem + INFO_BLOCKS_OFFSET + empty_block_num * BLOCK_SIZE;
+            if (num_bytes_to_write > BLOCK_SIZE) {
+                memcpy(destination, data + offset_in_data, BLOCK_SIZE);
+                num_bytes_to_write -= BLOCK_SIZE;
+                file_inode->size_ += BLOCK_SIZE;
+            }
+            else {
+                memcpy(destination, data + offset_in_data, num_bytes_to_write);
+                file_inode->size_ += num_bytes_to_write;
+                num_bytes_to_write = 0;
+            }
+        }
+    }
+    return 0;
+}
+
+char* read_from_FS_file(void* filesystem, const char* name) { //!!! ALLOCATES MEMORY VIA MALLOC !!!
+    Superblock* super = (Superblock*)filesystem;
+    int inode_num = get_inode_number(filesystem, name, super->current_inode_);
+    if (inode_num == -1) {
+        exit(-1);
+    }
+    Inode* file_inode = (Inode*)(filesystem + INDOES_OFFSET + inode_num * sizeof(Inode));
+    if (file_inode->type_ == Directory) {
+        exit(-1); //error
+    }
+    char* output = malloc(file_inode->size_ + 1);
+    memcpy(output, "\0", 1);
+    uint16_t bytes_to_read = file_inode->size_;
+    for (int i = 0; i < file_inode->num_blocks_taken_; ++i) {
+        uint16_t block_num = file_inode->block_numbers_[i];
+        char* block = (char*)(filesystem + INFO_BLOCKS_OFFSET + block_num * BLOCK_SIZE);
+        if (bytes_to_read > BLOCK_SIZE) {
+            strncat(output, block, BLOCK_SIZE);
+            bytes_to_read -= BLOCK_SIZE;
+        }
+        else {
+            strncat(output, block, bytes_to_read);
+            bytes_to_read = 0;
+        }
+    }
+    strcat(output, "\0");
+    return output;
+}
+
+uint8_t import_file(void* filesystem, char* inner_name, const char* outer_name) {
+    Superblock* super = (Superblock*)filesystem;
+    Inode* current = (Inode*)(filesystem + INDOES_OFFSET + super->current_inode_ * sizeof(Inode));
+
+    FILE *file = fopen(outer_name, "r");
+
+    if (file == NULL)
+    {
+        return 1;
+    }
+    fseeko(file, 0, SEEK_END);
+    int file_size = (int)ftell(file);
+    rewind(file);
+    char* file_data = malloc(file_size +1);
+    memset(file_data, 0, file_size + 1);
+    fread(file_data, sizeof(char), file_size, file);
+
+    write_to_FS_file(filesystem, inner_name, file_data);
+    fclose(file);
+    free(file_data);
+    return 0;
+}
 void* init_filesystem() {
     void* filesystem = allocate_memory_for_filesystem();
     Superblock super;
