@@ -99,8 +99,6 @@ uint8_t make_directory(void* filesystem, const char* name) {
     blk.inode_num_ = empty_inode_num;
 
     //tell current inode that new directory is created in it
-    
-    printf("%d ", current->num_blocks_taken_);
     uint16_t fillable_space = BLOCK_SIZE - BLOCK_SIZE % sizeof(DirectoryInfoBlock);
     uint16_t empty_space = fillable_space - current->size_ % fillable_space;
     if (empty_space >= sizeof(DirectoryInfoBlock) && empty_space != fillable_space) {
@@ -156,31 +154,71 @@ char* list_dir(void* filesystem) { ///!!! ALLOCATES MEMORY VIA MALLOC !!!
     return output;
 }
 
-void change_directory_absolute(void* filesystem, const char* path) {
+int get_inode_number(void* filesystem, const char* name, uint16_t current_inode_num) {
+    Inode* current = (Inode*)(filesystem + INDOES_OFFSET + current_inode_num * (sizeof(Inode)));
+    if (!strcmp(name, "..")) {
+        return current->parent_dir_inode_num_;
+    }
+    uint16_t bytes_to_read = current->size_;
+    uint16_t fillable_space = BLOCK_SIZE - BLOCK_SIZE % sizeof(DirectoryInfoBlock);
+    for (int i = 0; i < current->num_blocks_taken_; ++i) {
+        uint16_t block_num = current->block_numbers_[i];
+        DirectoryInfoBlock* blk = (DirectoryInfoBlock*)(filesystem + INFO_BLOCKS_OFFSET + block_num * BLOCK_SIZE);
+        uint16_t num_dir_info_blocks_to_read;
 
+        //set how many DirectoryInfoBlocks to read in BLOCK
+        if (bytes_to_read / sizeof(DirectoryInfoBlock) > fillable_space / sizeof(DirectoryInfoBlock)) {
+            num_dir_info_blocks_to_read = fillable_space / sizeof(DirectoryInfoBlock);
+        }
+        else {
+            num_dir_info_blocks_to_read = bytes_to_read / sizeof(DirectoryInfoBlock);
+        }
+        for (int j = 0; j < num_dir_info_blocks_to_read; ++j) {
+            if (!strcmp(name, blk[j].name_)) {
+                return blk[j].inode_num_;
+            }
+            bytes_to_read -= sizeof(DirectoryInfoBlock);
+        }
+    }
+    return -1;
 }
 
-void change_directory_relative(void* filesystem, const char* path) {
-    uint16_t path_index = 0;
-    while (path_index < strlen(path)) {
-        while(path[path_index] != '/' && path_index < strlen(path)) {
-
+uint8_t change_directory_from_inode(void* filesystem, const char* path, uint16_t inode_num) {
+    Superblock* super = (Superblock*)filesystem;
+    uint16_t begin = 0;
+    uint16_t end = 0;
+    char next_directory[256];
+    uint16_t tmp_inode_num = inode_num;
+    while (end < strlen(path)) {
+        while(path[end] != '/' && end < strlen(path)) {
+            ++end;
         }
-
+        memcpy(next_directory, path + begin, end - begin);
+        memcpy(next_directory + end - begin, "\0", 1);
+        ++end;
+        begin = end;
+        int inode_num = get_inode_number(filesystem, next_directory, tmp_inode_num);
+        if (inode_num != -1) {
+            tmp_inode_num = inode_num;
+        }
+        else {
+            return 1; //error
+        }
     }
+    super->current_inode_ = tmp_inode_num;
+    return 0; //success
 }
 
 void change_directory(void* filesystem, const char* path) {
     if (path[0] == '/') {
-        change_directory_absolute(filesystem, path);
+        change_directory_from_inode(filesystem, path + 1, 0); //from root inode
     }
     else {
-        change_directory_relative(filesystem, path);
+        Superblock* super = (Superblock*)filesystem;
+        change_directory_from_inode(filesystem, path, super->current_inode_);
     }
     return;
 }
-
-
 
 void* init_filesystem() {
     void* filesystem = allocate_memory_for_filesystem();
