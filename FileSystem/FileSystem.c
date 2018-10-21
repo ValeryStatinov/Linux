@@ -61,18 +61,29 @@ uint32_t get_empty_block(void* filesystem) {
 }
 
 uint16_t get_empty_inode(void* filesystem) {
-    uint64_t* bitmap = (uint64_t*)(filesystem + INODE_BITMAP_OFFSET);
+    uint64_t* inodes_bitmap = (uint64_t*)(filesystem + INODE_BITMAP_OFFSET);
     for (int i = 0; i < NUM_INODES / 64; ++i) {
         for (int j = 0; j < 64; ++j) {
-            if (((bitmap[i] >> j) & 1) == 0) {
+            if (((inodes_bitmap[i] >> j) & 1) == 0) {
                 uint16_t empty_inode_num = i * 64 + j;
-                uint64_t* inodes_bitmap = (uint64_t*)(filesystem + INODE_BITMAP_OFFSET);
                 inodes_bitmap[empty_inode_num / 64] = inodes_bitmap[empty_inode_num / 64] | (1 << (empty_inode_num % 64));
                 return empty_inode_num;
             }
         }
     }
     return 0;
+}
+
+void release_inode(void* filesystem, uint16_t inode_num) {
+    uint64_t* inodes_bitmap = (uint64_t*)(filesystem + INODE_BITMAP_OFFSET);
+    inodes_bitmap[inode_num / 64] = inodes_bitmap[inode_num / 64] & (~(1 << (inode_num % 64)));
+    return;
+}
+
+void release_block(void* filesystem, uint32_t block_num) {
+    uint64_t* blocks_bitmap = (uint64_t*)(filesystem + INODE_BITMAP_OFFSET);
+    blocks_bitmap[block_num / 64] = blocks_bitmap[block_num / 64] & (~(1 << (block_num % 64)));
+    return;
 }
 
 char* list_dir(void* filesystem) { ///!!! ALLOCATES MEMORY VIA MALLOC !!!
@@ -337,6 +348,95 @@ uint8_t import_file(void* filesystem, char* inner_name, const char* outer_name) 
     free(file_data);
     return 0;
 }
+
+void delete_file(void* filesystem, uint16_t file_inode_num) {
+    Inode* file_inode = (Inode*)(filesystem + INDOES_OFFSET + file_inode_num * sizeof(Inode));
+    for(uint8_t i = 0; i < file_inode->num_blocks_taken_; ++i) {
+        release_block(filesystem, file_inode->block_numbers_[i]);
+    }
+    release_inode(filesystem, file_inode_num);
+    return;
+}
+
+void delete_directory(void* filesystem, uint16_t dir_inode_num) {
+    Inode* dir_inode = (Inode*)(filesystem + INDOES_OFFSET + dir_inode_num * sizeof(Inode));
+    for(uint8_t i = 0; i < dir_inode->num_blocks_taken_; ++i) {
+        uint32_t block_num = dir_inode->block_numbers_[i];
+        DirectoryInfoBlock* blk = (DirectoryInfoBlock*)(filesystem + INFO_BLOCKS_OFFSET + block_num * BLOCK_SIZE);
+
+        //perform delete item functionality
+        int next_item_inode = get_inode_number(filesystem, blk->name_, dir_inode_num);
+        Inode* inode = (Inode*)(filesystem + INDOES_OFFSET + next_item_inode * sizeof(Inode));
+        if (inode->type_ == File) {
+            delete_file(filesystem, next_item_inode);
+        }
+        else {
+            delete_directory(filesystem, next_item_inode);
+        }
+
+        release_block(filesystem, block_num);
+    }
+    release_inode(filesystem, dir_inode_num);
+    return;
+}
+
+uint8_t delete_item(void* filesystem, const char* name) {
+    Superblock* super = (Superblock*)filesystem;
+    int inode_num = get_inode_number(filesystem, name, super->current_inode_);
+    if (inode_num == -1) {
+        return 1; //error
+    }
+    uint64_t* inode_bitmap = (uint64_t*)(filesystem + INODE_BITMAP_OFFSET);
+    uint64_t* block_bitmap = (uint64_t*)(filesystem + BLOCK_BITMAP_OFFSET);
+    
+    Inode* inode = (Inode*)(filesystem + INDOES_OFFSET + inode_num * sizeof(Inode));
+    if (inode->type_ == File) {
+        delete_file(filesystem, inode_num);
+    }
+    else {
+        delete_directory(filesystem, inode_num);
+    }
+
+    //tell current inode that file or directory is deleted
+    Inode* current = (Inode*)(filesystem + INDOES_OFFSET + super->current_inode_ * sizeof(Inode));
+    uint16_t bytes_to_read = current->size_;
+    uint16_t fillable_space = BLOCK_SIZE - BLOCK_SIZE % sizeof(DirectoryInfoBlock);
+    DirectoryInfoBlock* deleted_block;
+    for (int i = 0; i < current->num_blocks_taken_; ++i) {
+        uint32_t block_num = current->block_numbers_[i];
+        DirectoryInfoBlock* blk = (DirectoryInfoBlock*)(filesystem + INFO_BLOCKS_OFFSET + block_num * BLOCK_SIZE);
+        uint16_t num_dir_info_blocks_to_read;
+
+        //set how many DirectoryInfoBlocks to read in BLOCK
+        if (bytes_to_read / sizeof(DirectoryInfoBlock) > fillable_space / sizeof(DirectoryInfoBlock)) {
+            num_dir_info_blocks_to_read = fillable_space / sizeof(DirectoryInfoBlock);
+        }
+        else {
+            num_dir_info_blocks_to_read = bytes_to_read / sizeof(DirectoryInfoBlock);
+        }
+
+        for (int j = 0; j < num_dir_info_blocks_to_read; ++j) {
+            if (!strcmp(name, blk[j].name_)) {
+                if(num_dir_info_blocks_to_read == 1) {
+                    current->size_ -= sizeof(DirectoryInfoBlock);
+                    release_block(filesystem, block_num);
+                    return 0;
+                }
+                else {
+                    deleted_block = blk + j * sizeof(DirectoryInfoBlock);
+                    i = current->num_blocks_taken_;
+                }
+            }
+            bytes_to_read -= sizeof(DirectoryInfoBlock);
+        }
+    }
+    void* last_dir_info_block = filesystem + INFO_BLOCKS_OFFSET + current->block_numbers_[current->num_blocks_taken_ - 1] *
+        BLOCK_SIZE + current->size_ - sizeof(DirectoryInfoBlock);
+    memcpy(deleted_block, last_dir_info_block, sizeof(DirectoryInfoBlock));
+    current->size_ -= sizeof(DirectoryInfoBlock); 
+    return 0;
+}
+
 void* init_filesystem() {
     void* filesystem = allocate_memory_for_filesystem();
     Superblock super;
