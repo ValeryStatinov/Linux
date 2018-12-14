@@ -1,0 +1,1 @@
+asmlinkage long sys_get_user(const char *surname, unsigned int len);
